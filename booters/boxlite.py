@@ -1,6 +1,9 @@
 import asyncio
 import random
-from collections.abc import Sequence
+import signal
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
+from types import FrameType
 from typing import Any
 
 import aiohttp
@@ -23,6 +26,31 @@ from data.plugins.astrbot_sandbox_shipyard.booters.shipyard import (
 _HEALTH_PROBE_TIMEOUT = aiohttp.ClientTimeout(total=5)
 _HEALTH_PROBE_INTERVAL = 1
 _HEALTH_PROBE_MAX_ATTEMPTS = 60
+SignalHandler = Callable[[int, FrameType | None], Any] | int | None
+
+
+@contextmanager
+def capture_signal_handlers() -> Iterator[None]:
+    handlers: dict[int, SignalHandler] = {}
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        handlers[signum] = signal.getsignal(signum)
+    try:
+        yield
+    finally:
+        _restore_signal_handlers(handlers)
+
+
+def _restore_signal_handlers(handlers: dict[int, SignalHandler]) -> None:
+    for signum, handler in handlers.items():
+        try:
+            signal.signal(signum, handler)
+        except (OSError, ValueError):
+            # signal.signal() is only valid from the main thread.
+            logger.debug(
+                "Failed to restore BoxLite signal handler for signum=%s",
+                signum,
+                exc_info=True,
+            )
 
 
 class SandboxClientError(Exception):
@@ -262,21 +290,22 @@ class BoxliteBooter(ComputerBooter):
         )
         random_port = random.randint(20000, 30000)
         box_name = self.persistent_name if self.persistent else None
-        self.box = boxlite.SimpleBox(
-            image="soulter/shipyard-ship",
-            name=box_name,
-            auto_remove=not self.persistent,
-            reuse_existing=self.persistent,
-            memory_mib=512,
-            cpus=1,
-            ports=[
-                {
-                    "host_port": random_port,
-                    "guest_port": 8123,
-                }
-            ],
-        )
-        await self.box.start()
+        with capture_signal_handlers():
+            self.box = boxlite.SimpleBox(
+                image="soulter/shipyard-ship",
+                name=box_name,
+                auto_remove=not self.persistent,
+                reuse_existing=self.persistent,
+                memory_mib=512,
+                cpus=1,
+                ports=[
+                    {
+                        "host_port": random_port,
+                        "guest_port": 8123,
+                    }
+                ],
+            )
+            await self.box.start()
         logger.info(f"Boxlite booter started for session: {session_id}")
         self._sandbox_client = MockShipyardSandboxClient(
             sb_url=f"http://127.0.0.1:{random_port}"
