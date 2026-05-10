@@ -1,5 +1,6 @@
 import asyncio
 import random
+from collections.abc import Sequence
 from typing import Any
 
 import aiohttp
@@ -28,13 +29,13 @@ _HEALTH_PROBE_MAX_ATTEMPTS = 60
 class MockShipyardSandboxClient:
     def __init__(self, sb_url: str) -> None:
         self.sb_url = sb_url.rstrip("/")
-        self._session: aiohttp.ClientSession | None = None
+        connector = aiohttp.TCPConnector(limit=10, limit_per_host=5)
+        self._session: aiohttp.ClientSession = aiohttp.ClientSession(connector=connector)
 
     @property
     def _client(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
-            connector = aiohttp.TCPConnector(limit=10, limit_per_host=5)
-            self._session = aiohttp.ClientSession(connector=connector)
+            raise RuntimeError("Sandbox HTTP client session has been closed")
         return self._session
 
     async def close(self) -> None:
@@ -179,6 +180,10 @@ def _normalize_python_result(result: dict[str, Any]) -> dict[str, Any]:
         images_value = output.get("images", [])
         if isinstance(images_value, list):
             images = images_value
+        elif isinstance(images_value, Sequence) and not isinstance(
+            images_value, (str, bytes)
+        ):
+            images = list(images_value)
         text = output.get("text", output.get("stdout", "")) or ""
     else:
         text = output or ""
@@ -203,7 +208,6 @@ class BoxliteBooter(ComputerBooter):
         self._ship_fs: ShipyardFileSystemComponent | None = None
         self._fs: ShipyardFileSystemWrapper | None = None
         self.box: boxlite.SimpleBox | None = None
-        self._shut_down = False
 
     @property
     def mocked(self) -> MockShipyardSandboxClient | None:
@@ -269,7 +273,10 @@ class BoxliteBooter(ComputerBooter):
                 await self._sandbox_client.close()
             finally:
                 self._sandbox_client = None
-                self._shut_down = True
+                self._python = None
+                self._shell = None
+                self._ship_fs = None
+                self._fs = None
 
     async def shutdown(self) -> None:
         """Gracefully shut down the booter.
@@ -287,7 +294,8 @@ class BoxliteBooter(ComputerBooter):
             await self.box.__aexit__(None, None, None)
         else:
             await self.box.shutdown()
-        logger.info(f"Boxlite booter for ship: {self.box.id} stopped")
+        self.box = None
+        logger.info(f"Boxlite booter for ship stopped")
 
     async def destroy(self) -> None:
         """Forcefully destroy the booter without preserving state."""
@@ -297,10 +305,11 @@ class BoxliteBooter(ComputerBooter):
         logger.info(f"Destroying Boxlite booter for ship: {self.box.id}")
         await self._close_client()
         await self.box.shutdown()
+        self.box = None
 
     async def available(self) -> bool:
-        if self._shut_down:
-            raise RuntimeError("Boxlite booter has been shut down")
+        if self.box is None:
+            return False
         if self._sandbox_client is None:
             return False
         return await self._sandbox_client.healthy()
@@ -325,8 +334,8 @@ class BoxliteBooter(ComputerBooter):
 
     async def upload_file(self, path: str, file_name: str) -> dict:
         """Upload file to sandbox"""
-        if self._shut_down:
-            raise RuntimeError("Boxlite booter has been shut down")
+        if self.box is None:
+            raise RuntimeError("Boxlite booter has not been booted")
         if self._sandbox_client is None:
             raise RuntimeError("Boxlite booter has not been booted")
         return await self._sandbox_client.upload_file(path, file_name)

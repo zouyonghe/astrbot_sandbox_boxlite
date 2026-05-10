@@ -191,6 +191,7 @@ async def test_boxlite_booter_available_uses_health_probe(monkeypatch):
     )
 
     booter = boxlite_booter.BoxliteBooter()
+    booter.box = SimpleNamespace(id="fake-box")
     booter._sandbox_client = boxlite_booter.MockShipyardSandboxClient(
         "http://127.0.0.1:12345"
     )
@@ -241,6 +242,35 @@ async def test_boxlite_python_wrapper_normalizes_shipyard_results(
     assert result["data"]["error"] == expected_error
 
 
+def test_normalize_python_result_accepts_tuple_images():
+    result = boxlite_booter._normalize_python_result(
+        {
+            "output": {
+                "text": "hello",
+                "images": ("a.png", "b.png"),
+            },
+            "error": "",
+        }
+    )
+
+    assert result["data"]["output"]["text"] == "hello"
+    assert result["data"]["output"]["images"] == ["a.png", "b.png"]
+
+
+def test_normalize_python_result_drops_string_images():
+    result = boxlite_booter._normalize_python_result(
+        {
+            "output": {
+                "text": "hello",
+                "images": "not-a-list",
+            },
+            "error": "",
+        }
+    )
+
+    assert result["data"]["output"]["images"] == []
+
+
 @pytest.mark.asyncio
 async def test_boxlite_booter_shutdown_closes_sandbox_client():
     close_calls = []
@@ -262,6 +292,8 @@ async def test_boxlite_booter_shutdown_closes_sandbox_client():
     await booter.shutdown()
 
     assert close_calls == ["close"]
+    assert booter.box is None
+    assert booter._sandbox_client is None
 
 
 @pytest.mark.asyncio
@@ -285,3 +317,37 @@ async def test_boxlite_booter_destroy_closes_sandbox_client():
     await booter.destroy()
 
     assert close_calls == ["close"]
+    assert booter.box is None
+    assert booter._sandbox_client is None
+
+
+@pytest.mark.asyncio
+async def test_boxlite_booter_components_unavailable_after_shutdown():
+    class FakeBox:
+        id = "fake-box"
+
+        async def shutdown(self):
+            pass
+
+    class FakeClient:
+        async def close(self):
+            pass
+
+    booter = boxlite_booter.BoxliteBooter()
+    booter.box = FakeBox()
+    booter._sandbox_client = FakeClient()
+    booter._fs = object()
+    booter._python = object()
+    booter._shell = object()
+
+    await booter.shutdown()
+
+    assert booter._fs is None
+    assert booter._python is None
+    assert booter._shell is None
+    with pytest.raises(RuntimeError, match="not been booted"):
+        booter.fs
+    with pytest.raises(RuntimeError, match="not been booted"):
+        booter.python
+    with pytest.raises(RuntimeError, match="not been booted"):
+        booter.shell
