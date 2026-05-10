@@ -135,13 +135,28 @@ class MockShipyardSandboxClient:
 
 
 class BoxliteBooter(ComputerBooter):
+    def __init__(
+        self,
+        *,
+        persistent: bool = False,
+        persistent_name: str | None = None,
+        resume: bool = False,
+    ) -> None:
+        self.persistent = persistent
+        self.persistent_name = persistent_name
+        self.resume = resume
+
     async def boot(self, session_id: str) -> None:
         logger.info(
             f"Booting(Boxlite) for session: {session_id}, this may take a while..."
         )
         random_port = random.randint(20000, 30000)
+        box_name = self.persistent_name if self.persistent else None
         self.box = boxlite.SimpleBox(
             image="soulter/shipyard-ship",
+            name=box_name,
+            auto_remove=not self.persistent,
+            reuse_existing=self.persistent,
             memory_mib=512,
             cpus=1,
             ports=[
@@ -179,8 +194,15 @@ class BoxliteBooter(ComputerBooter):
 
     async def shutdown(self) -> None:
         logger.info(f"Shutting down Boxlite booter for ship: {self.box.id}")
-        self.box.shutdown()
+        if self.persistent:
+            await self.box.__aexit__(None, None, None)
+        else:
+            self.box.shutdown()
         logger.info(f"Boxlite booter for ship: {self.box.id} stopped")
+
+    async def destroy(self) -> None:
+        logger.info(f"Destroying Boxlite booter for ship: {self.box.id}")
+        await self.box.shutdown()
 
     @property
     def fs(self) -> FileSystemComponent:
