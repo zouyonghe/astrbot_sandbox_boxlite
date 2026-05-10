@@ -208,6 +208,56 @@ async def test_boxlite_booter_available_returns_false_before_boot():
 
 
 @pytest.mark.asyncio
+async def test_boxlite_boot_restores_process_signal_handlers(monkeypatch):
+    original = {
+        boxlite_booter.signal.SIGINT: object(),
+        boxlite_booter.signal.SIGTERM: object(),
+    }
+    active = dict(original)
+
+    def fake_getsignal(signum):
+        return active[signum]
+
+    def fake_signal(signum, handler):
+        active[signum] = handler
+
+    class FakeSimpleBox:
+        id = "fake-box"
+
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def start(self):
+            # Simulate BoxLite's native signal hook changing process handlers.
+            active[boxlite_booter.signal.SIGINT] = "boxlite-int"
+            active[boxlite_booter.signal.SIGTERM] = "boxlite-term"
+
+    async def fake_wait_healthy(self, ship_id):
+        return None
+
+    monkeypatch.setattr(boxlite_booter.signal, "getsignal", fake_getsignal)
+    monkeypatch.setattr(boxlite_booter.signal, "signal", fake_signal)
+    monkeypatch.setattr(boxlite_booter.boxlite, "SimpleBox", FakeSimpleBox)
+    monkeypatch.setattr(
+        boxlite_booter.MockShipyardSandboxClient,
+        "wait_healthy",
+        fake_wait_healthy,
+    )
+    monkeypatch.setattr(boxlite_booter, "ShipyardPythonComponent", lambda **_: object())
+    monkeypatch.setattr(boxlite_booter, "ShipyardShellComponent", lambda **_: object())
+    monkeypatch.setattr(
+        boxlite_booter, "ShipyardFileSystemComponent", lambda **_: object()
+    )
+    monkeypatch.setattr(boxlite_booter, "ShipyardFileSystemWrapper", lambda **_: object())
+
+    booter = boxlite_booter.BoxliteBooter()
+
+    await booter.boot("session-1")
+
+    assert active == original
+
+
+@pytest.mark.asyncio
 async def test_boxlite_upload_file_uses_configured_base_url(tmp_path):
     posted = {}
 

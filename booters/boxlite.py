@@ -1,5 +1,6 @@
 import asyncio
 import random
+import signal
 from collections.abc import Sequence
 from typing import Any
 
@@ -23,6 +24,22 @@ from data.plugins.astrbot_sandbox_shipyard.booters.shipyard import (
 _HEALTH_PROBE_TIMEOUT = aiohttp.ClientTimeout(total=5)
 _HEALTH_PROBE_INTERVAL = 1
 _HEALTH_PROBE_MAX_ATTEMPTS = 60
+
+
+def _capture_signal_handlers() -> dict[int, Any]:
+    handlers: dict[int, Any] = {}
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        handlers[signum] = signal.getsignal(signum)
+    return handlers
+
+
+def _restore_signal_handlers(handlers: dict[int, Any]) -> None:
+    for signum, handler in handlers.items():
+        try:
+            signal.signal(signum, handler)
+        except (OSError, ValueError):
+            # signal.signal() is only valid from the main thread.
+            pass
 
 
 class SandboxClientError(Exception):
@@ -262,21 +279,25 @@ class BoxliteBooter(ComputerBooter):
         )
         random_port = random.randint(20000, 30000)
         box_name = self.persistent_name if self.persistent else None
-        self.box = boxlite.SimpleBox(
-            image="soulter/shipyard-ship",
-            name=box_name,
-            auto_remove=not self.persistent,
-            reuse_existing=self.persistent,
-            memory_mib=512,
-            cpus=1,
-            ports=[
-                {
-                    "host_port": random_port,
-                    "guest_port": 8123,
-                }
-            ],
-        )
-        await self.box.start()
+        signal_handlers = _capture_signal_handlers()
+        try:
+            self.box = boxlite.SimpleBox(
+                image="soulter/shipyard-ship",
+                name=box_name,
+                auto_remove=not self.persistent,
+                reuse_existing=self.persistent,
+                memory_mib=512,
+                cpus=1,
+                ports=[
+                    {
+                        "host_port": random_port,
+                        "guest_port": 8123,
+                    }
+                ],
+            )
+            await self.box.start()
+        finally:
+            _restore_signal_handlers(signal_handlers)
         logger.info(f"Boxlite booter started for session: {session_id}")
         self._sandbox_client = MockShipyardSandboxClient(
             sb_url=f"http://127.0.0.1:{random_port}"
