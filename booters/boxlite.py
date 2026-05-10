@@ -43,20 +43,19 @@ class MockShipyardSandboxClient:
         payload: dict[str, Any],
         session_id: str,
     ) -> dict[str, Any]:
-        async with aiohttp.ClientSession() as session:
-            headers = {"X-SESSION-ID": session_id}
-            async with session.post(
-                f"{self.sb_url}/{operation_type}",
-                json=payload,
-                headers=headers,
-            ) as response:
-                if response.status == 200:
-                    return await response.json()
-                else:
-                    error_text = await response.text()
-                    raise Exception(
-                        f"Failed to exec operation: {response.status} {error_text}"
-                    )
+        headers = {"X-SESSION-ID": session_id}
+        async with self._client.post(
+            f"{self.sb_url}/{operation_type}",
+            json=payload,
+            headers=headers,
+        ) as response:
+            if response.status == 200:
+                return await response.json()
+            else:
+                error_text = await response.text()
+                raise Exception(
+                    f"Failed to exec operation: {response.status} {error_text}"
+                )
 
     async def upload_file(self, path: str, remote_path: str) -> dict:
         """Upload a file to the sandbox"""
@@ -79,25 +78,24 @@ class MockShipyardSandboxClient:
 
             timeout = aiohttp.ClientTimeout(total=120)  # 2 minutes for file upload
 
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(url, data=data) as response:
-                    if response.status == 200:
-                        logger.info(
-                            "[Computer] File uploaded to Boxlite sandbox: %s",
-                            remote_path,
-                        )
-                        return {
-                            "success": True,
-                            "message": "File uploaded successfully",
-                            "file_path": remote_path,
-                        }
-                    else:
-                        error_text = await response.text()
-                        return {
-                            "success": False,
-                            "error": f"Server returned {response.status}: {error_text}",
-                            "message": "File upload failed",
-                        }
+            async with self._client.post(url, data=data, timeout=timeout) as response:
+                if response.status == 200:
+                    logger.info(
+                        "[Computer] File uploaded to Boxlite sandbox: %s",
+                        remote_path,
+                    )
+                    return {
+                        "success": True,
+                        "message": "File uploaded successfully",
+                        "file_path": remote_path,
+                    }
+                else:
+                    error_text = await response.text()
+                    return {
+                        "success": False,
+                        "error": f"Server returned {response.status}: {error_text}",
+                        "message": "File upload failed",
+                    }
 
         except aiohttp.ClientError as e:
             logger.error(f"Failed to upload file: {e}")
@@ -197,11 +195,21 @@ class BoxliteBooter(ComputerBooter):
         self.persistent_name = persistent_name
         self.sandbox_id = sandbox_id
         self._sandbox_client: MockShipyardSandboxClient | None = None
-        self._python: BoxlitePythonWrapper | None = None
+        self._python: ShipyardPythonComponent | None = None
         self._shell: ShipyardShellComponent | None = None
         self._ship_fs: ShipyardFileSystemComponent | None = None
         self._fs: ShipyardFileSystemWrapper | None = None
         self.box: boxlite.SimpleBox | None = None
+
+    @property
+    def mocked(self) -> MockShipyardSandboxClient | None:
+        """Backward-compatible alias for _sandbox_client."""
+        return self._sandbox_client
+
+    @mocked.setter
+    def mocked(self, value: MockShipyardSandboxClient | None) -> None:
+        """Backward-compatible alias for _sandbox_client."""
+        self._sandbox_client = value
 
     async def boot(self, session_id: str) -> None:
         logger.info(
@@ -251,10 +259,13 @@ class BoxliteBooter(ComputerBooter):
 
         await self._sandbox_client.wait_healthy(self.box.id, session_id)
 
-    async def shutdown(self) -> None:
-        logger.info(f"Shutting down Boxlite booter for ship: {self.box.id}")
+    async def _close_client(self) -> None:
         if self._sandbox_client is not None:
             await self._sandbox_client.close()
+
+    async def shutdown(self) -> None:
+        logger.info(f"Shutting down Boxlite booter for ship: {self.box.id}")
+        await self._close_client()
         if self.persistent:
             await self.box.__aexit__(None, None, None)
         else:
@@ -263,8 +274,7 @@ class BoxliteBooter(ComputerBooter):
 
     async def destroy(self) -> None:
         logger.info(f"Destroying Boxlite booter for ship: {self.box.id}")
-        if self._sandbox_client is not None:
-            await self._sandbox_client.close()
+        await self.shutdown()
         await self.box.shutdown()
 
     async def available(self) -> bool:
