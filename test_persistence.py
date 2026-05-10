@@ -208,6 +208,39 @@ async def test_boxlite_booter_available_returns_false_before_boot():
 
 
 @pytest.mark.asyncio
+async def test_boxlite_upload_file_uses_configured_base_url(tmp_path):
+    posted = {}
+
+    class FakeResponse:
+        status = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    class FakeSession:
+        closed = False
+
+        def post(self, url, *, data, timeout):
+            posted["url"] = url
+            posted["timeout"] = timeout
+            return FakeResponse()
+
+    local_file = tmp_path / "payload.txt"
+    local_file.write_text("payload", encoding="utf-8")
+    client = boxlite_booter.MockShipyardSandboxClient("http://127.0.0.1:12345")
+    await client.close()
+    client._session = FakeSession()
+
+    result = await client.upload_file(str(local_file), "/tmp/payload.txt")
+
+    assert result["success"] is True
+    assert posted["url"] == "http://127.0.0.1:12345/upload"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("raw_result", "expected_text", "expected_error"),
     [

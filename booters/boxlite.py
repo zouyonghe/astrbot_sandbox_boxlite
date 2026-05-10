@@ -20,7 +20,6 @@ from data.plugins.astrbot_sandbox_shipyard.booters.shipyard import (
     ShipyardFileSystemWrapper,
 )
 
-
 _HEALTH_PROBE_TIMEOUT = aiohttp.ClientTimeout(total=5)
 _HEALTH_PROBE_INTERVAL = 1
 _HEALTH_PROBE_MAX_ATTEMPTS = 60
@@ -81,7 +80,7 @@ class MockShipyardSandboxClient:
 
     async def upload_file(self, path: str, remote_path: str) -> dict:
         """Upload a file to the sandbox"""
-        url = f"http://{self.sb_url}/upload"
+        url = f"{self.sb_url}/upload"
 
         try:
             # Read file content
@@ -168,7 +167,9 @@ class MockShipyardSandboxClient:
         """
         probe_timeout = timeout or _HEALTH_PROBE_TIMEOUT
         probe_interval = interval if interval is not None else _HEALTH_PROBE_INTERVAL
-        probe_attempts = max_attempts if max_attempts is not None else _HEALTH_PROBE_MAX_ATTEMPTS
+        probe_attempts = (
+            max_attempts if max_attempts is not None else _HEALTH_PROBE_MAX_ATTEMPTS
+        )
 
         for attempt in range(probe_attempts):
             logger.info(f"Checking health for sandbox {ship_id} on {self.sb_url}...")
@@ -178,9 +179,7 @@ class MockShipyardSandboxClient:
             await asyncio.sleep(probe_interval)
         raise RuntimeError(f"Sandbox {ship_id} health check timed out")
 
-    async def healthy(
-        self, *, timeout: aiohttp.ClientTimeout | None = None
-    ) -> bool:
+    async def healthy(self, *, timeout: aiohttp.ClientTimeout | None = None) -> bool:
         try:
             async with self._client.get(
                 f"{self.sb_url}/health", timeout=timeout or _HEALTH_PROBE_TIMEOUT
@@ -333,7 +332,7 @@ class BoxliteBooter(ComputerBooter):
         else:
             await self.box.shutdown()
         self.box = None
-        logger.info(f"Boxlite booter for ship stopped")
+        logger.info("Boxlite booter for ship stopped")
 
     async def destroy(self) -> None:
         """Forcefully destroy the booter without preserving state."""
