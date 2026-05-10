@@ -28,14 +28,13 @@ _HEALTH_PROBE_MAX_ATTEMPTS = 60
 class MockShipyardSandboxClient:
     def __init__(self, sb_url: str) -> None:
         self.sb_url = sb_url.rstrip("/")
-        connector = aiohttp.TCPConnector(limit=10, limit_per_host=5)
-        self._session = aiohttp.ClientSession(connector=connector)
+        self._session: aiohttp.ClientSession | None = None
 
-    async def _client(self) -> aiohttp.ClientSession:
-        if self._session is not None and not self._session.closed:
-            return self._session
-        connector = aiohttp.TCPConnector(limit=10, limit_per_host=5)
-        self._session = aiohttp.ClientSession(connector=connector)
+    @property
+    def _client(self) -> aiohttp.ClientSession:
+        if self._session is None or self._session.closed:
+            connector = aiohttp.TCPConnector(limit=10, limit_per_host=5)
+            self._session = aiohttp.ClientSession(connector=connector)
         return self._session
 
     async def close(self) -> None:
@@ -51,8 +50,7 @@ class MockShipyardSandboxClient:
         session_id: str,
     ) -> dict[str, Any]:
         headers = {"X-SESSION-ID": session_id}
-        client = await self._client()
-        async with client.post(
+        async with self._client.post(
             f"{self.sb_url}/{operation_type}",
             json=payload,
             headers=headers,
@@ -86,8 +84,7 @@ class MockShipyardSandboxClient:
 
             timeout = aiohttp.ClientTimeout(total=120)  # 2 minutes for file upload
 
-            client = await self._client()
-            async with client.post(url, data=data, timeout=timeout) as response:
+            async with self._client.post(url, data=data, timeout=timeout) as response:
                 if response.status == 200:
                     logger.info(
                         "[Computer] File uploaded to Boxlite sandbox: %s",
@@ -134,7 +131,7 @@ class MockShipyardSandboxClient:
                 "message": "File upload failed",
             }
 
-    async def wait_healthy(self, ship_id: str, session_id: str) -> None:
+    async def wait_healthy(self, ship_id: str) -> None:
         """Wait until the sandbox health endpoint responds."""
         for attempt in range(_HEALTH_PROBE_MAX_ATTEMPTS):
             logger.info(f"Checking health for sandbox {ship_id} on {self.sb_url}...")
@@ -146,8 +143,7 @@ class MockShipyardSandboxClient:
 
     async def healthy(self) -> bool:
         try:
-            client = await self._client()
-            async with client.get(
+            async with self._client.get(
                 f"{self.sb_url}/health", timeout=_HEALTH_PROBE_TIMEOUT
             ) as response:
                 return response.status == 200
@@ -207,6 +203,7 @@ class BoxliteBooter(ComputerBooter):
         self._ship_fs: ShipyardFileSystemComponent | None = None
         self._fs: ShipyardFileSystemWrapper | None = None
         self.box: boxlite.SimpleBox | None = None
+        self._shut_down = False
 
     @property
     def mocked(self) -> MockShipyardSandboxClient | None:
@@ -264,11 +261,15 @@ class BoxliteBooter(ComputerBooter):
             _shipyard_fs=self._ship_fs, _shipyard_shell=self._shell
         )
 
-        await self._sandbox_client.wait_healthy(self.box.id, session_id)
+        await self._sandbox_client.wait_healthy(self.box.id)
 
     async def _close_client(self) -> None:
         if self._sandbox_client is not None:
-            await self._sandbox_client.close()
+            try:
+                await self._sandbox_client.close()
+            finally:
+                self._sandbox_client = None
+                self._shut_down = True
 
     async def shutdown(self) -> None:
         """Gracefully shut down the booter.
@@ -298,6 +299,8 @@ class BoxliteBooter(ComputerBooter):
         await self.box.shutdown()
 
     async def available(self) -> bool:
+        if self._shut_down:
+            raise RuntimeError("Boxlite booter has been shut down")
         if self._sandbox_client is None:
             return False
         return await self._sandbox_client.healthy()
@@ -322,6 +325,8 @@ class BoxliteBooter(ComputerBooter):
 
     async def upload_file(self, path: str, file_name: str) -> dict:
         """Upload file to sandbox"""
+        if self._shut_down:
+            raise RuntimeError("Boxlite booter has been shut down")
         if self._sandbox_client is None:
             raise RuntimeError("Boxlite booter has not been booted")
         return await self._sandbox_client.upload_file(path, file_name)
