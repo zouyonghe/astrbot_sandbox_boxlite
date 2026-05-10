@@ -20,15 +20,27 @@ from data.plugins.astrbot_sandbox_shipyard.booters.shipyard import (
 )
 
 
+_DEFAULT_TIMEOUT = aiohttp.ClientTimeout(total=30)
+
+
 class MockShipyardSandboxClient:
-    def __init__(self, sb_url: str) -> None:
+    def __init__(
+        self,
+        sb_url: str,
+        *,
+        session: aiohttp.ClientSession | None = None,
+    ) -> None:
         self.sb_url = sb_url.rstrip("/")
-        self._session: aiohttp.ClientSession | None = None
+        self._session = session
 
     @property
     def _client(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession()
+            connector = aiohttp.TCPConnector(limit=10, limit_per_host=5)
+            self._session = aiohttp.ClientSession(
+                connector=connector,
+                timeout=_DEFAULT_TIMEOUT,
+            )
         return self._session
 
     async def close(self) -> None:
@@ -264,6 +276,12 @@ class BoxliteBooter(ComputerBooter):
             await self._sandbox_client.close()
 
     async def shutdown(self) -> None:
+        """Gracefully shut down the booter.
+
+        For persistent sandboxes this calls the box's async exit
+        hook so state can be preserved.  For temporary sandboxes
+        this performs a regular shutdown.
+        """
         logger.info(f"Shutting down Boxlite booter for ship: {self.box.id}")
         await self._close_client()
         if self.persistent:
@@ -273,8 +291,9 @@ class BoxliteBooter(ComputerBooter):
         logger.info(f"Boxlite booter for ship: {self.box.id} stopped")
 
     async def destroy(self) -> None:
+        """Forcefully destroy the booter without preserving state."""
         logger.info(f"Destroying Boxlite booter for ship: {self.box.id}")
-        await self.shutdown()
+        await self._close_client()
         await self.box.shutdown()
 
     async def available(self) -> bool:
