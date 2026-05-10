@@ -173,3 +173,214 @@ async def test_boxlite_provider_reports_missing_persistent_box(monkeypatch):
     )
 
     assert exists is False
+
+
+@pytest.mark.asyncio
+async def test_boxlite_booter_available_uses_health_probe(monkeypatch):
+    calls = []
+
+    async def fake_probe(self):
+        calls.append(self.sb_url)
+        return True
+
+    monkeypatch.setattr(
+        boxlite_booter.MockShipyardSandboxClient,
+        "healthy",
+        fake_probe,
+        raising=False,
+    )
+
+    booter = boxlite_booter.BoxliteBooter()
+    booter.box = SimpleNamespace(id="fake-box")
+    booter._sandbox_client = boxlite_booter.MockShipyardSandboxClient(
+        "http://127.0.0.1:12345"
+    )
+
+    assert await booter.available() is True
+    assert calls == ["http://127.0.0.1:12345"]
+
+
+@pytest.mark.asyncio
+async def test_boxlite_booter_available_returns_false_before_boot():
+    booter = boxlite_booter.BoxliteBooter()
+
+    assert await booter.available() is False
+
+
+@pytest.mark.asyncio
+async def test_boxlite_upload_file_uses_configured_base_url(tmp_path):
+    posted = {}
+
+    class FakeResponse:
+        status = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    class FakeSession:
+        closed = False
+
+        def post(self, url, *, data, timeout):
+            posted["url"] = url
+            posted["timeout"] = timeout
+            return FakeResponse()
+
+    local_file = tmp_path / "payload.txt"
+    local_file.write_text("payload", encoding="utf-8")
+    client = boxlite_booter.MockShipyardSandboxClient("http://127.0.0.1:12345")
+    await client.close()
+    client._session = FakeSession()
+
+    result = await client.upload_file(str(local_file), "/tmp/payload.txt")
+
+    assert result["success"] is True
+    assert posted["url"] == "http://127.0.0.1:12345/upload"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("raw_result", "expected_text", "expected_error"),
+    [
+        ({"output": "hello\n", "error": ""}, "hello\n", ""),
+        ({"stdout": "hello\n", "stderr": ""}, "hello\n", ""),
+        ({"data": {"output": "hello\n", "error": ""}}, "hello\n", ""),
+        (
+            {"data": {"output": {"text": "hello\n", "images": []}, "error": ""}},
+            "hello\n",
+            "",
+        ),
+        ({"output": "", "error": "boom"}, "", "boom"),
+    ],
+)
+async def test_boxlite_python_wrapper_normalizes_shipyard_results(
+    raw_result, expected_text, expected_error
+):
+    calls = []
+
+    class FakeShipyardPython:
+        async def exec(self, code, kernel_id=None, timeout=30, silent=False):
+            calls.append((code, kernel_id, timeout, silent))
+            return raw_result
+
+    wrapper = boxlite_booter.BoxlitePythonWrapper(FakeShipyardPython())
+
+    result = await wrapper.exec("print('hello')", timeout=5, silent=True)
+
+    assert calls == [("print('hello')", None, 5, True)]
+    assert result["data"]["output"]["text"] == expected_text
+    assert result["data"]["output"]["images"] == []
+    assert result["data"]["error"] == expected_error
+
+
+def test_normalize_python_result_accepts_tuple_images():
+    result = boxlite_booter._normalize_python_result(
+        {
+            "output": {
+                "text": "hello",
+                "images": ("a.png", "b.png"),
+            },
+            "error": "",
+        }
+    )
+
+    assert result["data"]["output"]["text"] == "hello"
+    assert result["data"]["output"]["images"] == ["a.png", "b.png"]
+
+
+def test_normalize_python_result_drops_string_images():
+    result = boxlite_booter._normalize_python_result(
+        {
+            "output": {
+                "text": "hello",
+                "images": "not-a-list",
+            },
+            "error": "",
+        }
+    )
+
+    assert result["data"]["output"]["images"] == []
+
+
+@pytest.mark.asyncio
+async def test_boxlite_booter_shutdown_closes_sandbox_client():
+    close_calls = []
+
+    class FakeBox:
+        id = "fake-box"
+
+        async def shutdown(self):
+            pass
+
+    class FakeClient:
+        async def close(self):
+            close_calls.append("close")
+
+    booter = boxlite_booter.BoxliteBooter()
+    booter.box = FakeBox()
+    booter._sandbox_client = FakeClient()
+
+    await booter.shutdown()
+
+    assert close_calls == ["close"]
+    assert booter.box is None
+    assert booter._sandbox_client is None
+
+
+@pytest.mark.asyncio
+async def test_boxlite_booter_destroy_closes_sandbox_client():
+    close_calls = []
+
+    class FakeBox:
+        id = "fake-box"
+
+        async def shutdown(self):
+            pass
+
+    class FakeClient:
+        async def close(self):
+            close_calls.append("close")
+
+    booter = boxlite_booter.BoxliteBooter()
+    booter.box = FakeBox()
+    booter._sandbox_client = FakeClient()
+
+    await booter.destroy()
+
+    assert close_calls == ["close"]
+    assert booter.box is None
+    assert booter._sandbox_client is None
+
+
+@pytest.mark.asyncio
+async def test_boxlite_booter_components_unavailable_after_shutdown():
+    class FakeBox:
+        id = "fake-box"
+
+        async def shutdown(self):
+            pass
+
+    class FakeClient:
+        async def close(self):
+            pass
+
+    booter = boxlite_booter.BoxliteBooter()
+    booter.box = FakeBox()
+    booter._sandbox_client = FakeClient()
+    booter._fs = object()
+    booter._python = object()
+    booter._shell = object()
+
+    await booter.shutdown()
+
+    assert booter._fs is None
+    assert booter._python is None
+    assert booter._shell is None
+    with pytest.raises(RuntimeError, match="not been booted"):
+        booter.fs
+    with pytest.raises(RuntimeError, match="not been booted"):
+        booter.python
+    with pytest.raises(RuntimeError, match="not been booted"):
+        booter.shell
