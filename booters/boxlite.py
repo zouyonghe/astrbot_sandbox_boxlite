@@ -140,11 +140,9 @@ class BoxliteBooter(ComputerBooter):
         *,
         persistent: bool = False,
         persistent_name: str | None = None,
-        resume: bool = False,
     ) -> None:
         self.persistent = persistent
         self.persistent_name = persistent_name
-        self.resume = resume
 
     async def boot(self, session_id: str) -> None:
         logger.info(
@@ -197,7 +195,7 @@ class BoxliteBooter(ComputerBooter):
         if self.persistent:
             await self.box.__aexit__(None, None, None)
         else:
-            self.box.shutdown()
+            await self.box.shutdown()
         logger.info(f"Boxlite booter for ship: {self.box.id} stopped")
 
     async def destroy(self) -> None:

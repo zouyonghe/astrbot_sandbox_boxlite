@@ -54,7 +54,6 @@ class BoxliteSandboxProvider:
         client = BoxliteBooter(
             persistent=True,
             persistent_name=str(config.get("persistent_name") or sandbox_id).strip(),
-            resume=bool(config.get("resume", False)),
         )
         await client.boot(uuid.uuid5(uuid.NAMESPACE_DNS, session_id).hex)
         setattr(client, "sandbox_id", sandbox_id)
