@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from data.plugins.astrbot_sandbox_boxlite import provider as provider_module
+from data.plugins.astrbot_sandbox_boxlite.booters import boxlite as boxlite_booter
 
 
 @pytest.mark.parametrize(
@@ -126,3 +127,49 @@ async def test_boxlite_provider_destroy_booter_falls_back_to_shutdown():
     await provider.destroy_booter(FakeBooter(), {"retention_policy": "temporary"})
 
     assert calls == ["shutdown"]
+
+
+@pytest.mark.asyncio
+async def test_boxlite_provider_reports_persistent_box_exists(monkeypatch):
+    calls = []
+
+    class FakeRuntime:
+        def get_info(self, name):
+            calls.append(name)
+            return object()
+
+    monkeypatch.setattr(
+        boxlite_booter.boxlite,
+        "Boxlite",
+        SimpleNamespace(default=lambda: FakeRuntime()),
+    )
+
+    provider = provider_module.BoxliteSandboxProvider()
+
+    exists = await provider.check_persistent_sandbox_exists(
+        {"connect_info": {"persistent_name": "boxlite-1"}}
+    )
+
+    assert exists is True
+    assert calls == ["boxlite-1"]
+
+
+@pytest.mark.asyncio
+async def test_boxlite_provider_reports_missing_persistent_box(monkeypatch):
+    class FakeRuntime:
+        def get_info(self, name):
+            return None
+
+    monkeypatch.setattr(
+        boxlite_booter.boxlite,
+        "Boxlite",
+        SimpleNamespace(default=lambda: FakeRuntime()),
+    )
+
+    provider = provider_module.BoxliteSandboxProvider()
+
+    exists = await provider.check_persistent_sandbox_exists(
+        {"connect_info": {"persistent_name": "boxlite-1"}}
+    )
+
+    assert exists is False

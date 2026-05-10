@@ -7,6 +7,7 @@ from typing import Any
 from astrbot.core.computer.booters.base import ComputerBooter
 from astrbot.core.star.context import Context
 
+from .booters import boxlite as boxlite_booter
 from .booters.boxlite import BoxliteBooter
 
 BootHook = Callable[[Context, str, str, dict], Awaitable[ComputerBooter]]
@@ -48,6 +49,19 @@ class BoxliteSandboxProvider:
 
     def get_idle_timeout(self, context: Context, session_id: str) -> float:
         return 0.0
+
+    async def check_persistent_sandbox_exists(self, record: dict) -> bool:
+        connect_info = dict(record.get("connect_info") or {})
+        box_name = str(
+            connect_info.get("persistent_name")
+            or connect_info.get("name")
+            or record.get("sandbox_id")
+            or ""
+        ).strip()
+        if not box_name:
+            return False
+        runtime = boxlite_booter.boxlite.Boxlite.default()
+        return runtime.get_info(box_name) is not None
 
     async def create_booter(
         self, context: Context, session_id: str, sandbox_id: str, config: dict
