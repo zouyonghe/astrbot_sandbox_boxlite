@@ -29,6 +29,24 @@ def test_boxlite_sandbox_provider_supports_persistent_reconnect():
     assert provider_module.BoxliteSandboxProvider.supports_persistent_reconnect is True
 
 
+def test_boxlite_booter_can_import_without_shipyard_plugin(monkeypatch):
+    import builtins
+    import importlib
+
+    original_import = builtins.__import__
+
+    def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name.startswith("data.plugins.astrbot_sandbox_shipyard"):
+            raise ModuleNotFoundError(name)
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+
+    module = importlib.reload(boxlite_booter)
+
+    assert module.BoxliteBooter is boxlite_booter.BoxliteBooter
+
+
 def test_boxlite_provider_update_connect_info_populates_legacy_persistent_name():
     provider = provider_module.BoxliteSandboxProvider()
 
@@ -249,7 +267,9 @@ async def test_boxlite_boot_restores_process_signal_handlers(monkeypatch):
     monkeypatch.setattr(
         boxlite_booter, "ShipyardFileSystemComponent", lambda **_: object()
     )
-    monkeypatch.setattr(boxlite_booter, "ShipyardFileSystemWrapper", lambda **_: object())
+    monkeypatch.setattr(
+        boxlite_booter, "ShipyardFileSystemWrapper", lambda **_: object()
+    )
 
     booter = boxlite_booter.BoxliteBooter()
 
