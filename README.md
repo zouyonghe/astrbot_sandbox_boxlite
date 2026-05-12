@@ -35,18 +35,12 @@ Then restart AstrBot, or reload plugins from the plugin management page.
 
 ### Enable the BoxLite Sandbox Driver
 
-Enable sandbox mode in AstrBot and select the `boxlite` sandbox driver:
+In the AstrBot dashboard, enable sandbox mode and select the `boxlite` driver.
 
-```json
-{
-  "provider_settings": {
-    "computer_use_runtime": "sandbox",
-    "sandbox": {
-      "booter": "boxlite"
-    }
-  }
-}
-```
+Configuration path:
+
+- `provider_settings.computer_use_runtime`: `sandbox`
+- `provider_settings.sandbox.booter`: `boxlite`
 
 ## Configuration
 
