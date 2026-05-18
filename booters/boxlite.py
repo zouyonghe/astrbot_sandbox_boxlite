@@ -235,6 +235,30 @@ class BoxlitePythonWrapper(PythonComponent):
         return _normalize_python_result(result)
 
 
+class BoxliteShellWrapper(ShellComponent):
+    def __init__(self, shell: ShipyardShellComponent) -> None:
+        self._shell = shell
+
+    async def exec(
+        self,
+        command: str,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        timeout: int | None = 30,
+        shell: bool = True,
+        background: bool = False,
+    ) -> dict[str, Any]:
+        result = await self._shell.exec(
+            command,
+            cwd=cwd,
+            env=env,
+            timeout=timeout,
+            shell=shell,
+            background=background,
+        )
+        return _normalize_shell_result(result)
+
+
 def _normalize_python_result(result: dict[str, Any]) -> dict[str, Any]:
     data = result.get("data")
     payload = data if isinstance(data, dict) else result
@@ -255,6 +279,22 @@ def _normalize_python_result(result: dict[str, Any]) -> dict[str, Any]:
         text = output or ""
 
     return {"data": {"output": {"text": text, "images": images}, "error": error}}
+
+
+def _normalize_shell_result(result: dict[str, Any]) -> dict[str, Any]:
+    data = result.get("data")
+    payload = data if isinstance(data, dict) else result
+    stdout = payload.get("stdout", payload.get("output", "")) or ""
+    stderr = payload.get("stderr", payload.get("error", "")) or ""
+    exit_code = payload.get("exit_code", payload.get("returncode"))
+    if exit_code is None:
+        exit_code = 0 if not stderr else 1
+    return {
+        **payload,
+        "stdout": stdout,
+        "stderr": stderr,
+        "exit_code": exit_code,
+    }
 
 
 def _truncate_long_lines(text: str) -> str:
@@ -542,11 +582,12 @@ class BoxliteBooter(ComputerBooter):
                     session_id=session_id,
                 )
             )
-            self._shell = ShipyardShellComponent(
+            shipyard_shell = ShipyardShellComponent(
                 client=self._sandbox_client,  # type: ignore
                 ship_id=self.box.id,
                 session_id=session_id,
             )
+            self._shell = BoxliteShellWrapper(shipyard_shell)
             self._ship_fs = ShipyardFileSystemComponent(
                 client=self._sandbox_client,  # type: ignore
                 ship_id=self.box.id,

@@ -632,6 +632,51 @@ async def test_boxlite_python_wrapper_normalizes_shipyard_results(
     assert result["data"]["error"] == expected_error
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("raw_result", "expected_stdout", "expected_stderr", "expected_exit_code"),
+    [
+        ({"output": "ok\n", "error": "", "exit_code": 0}, "ok\n", "", 0),
+        ({"stdout": "ok\n", "stderr": "", "returncode": 0}, "ok\n", "", 0),
+        ({"data": {"output": "ok\n", "error": ""}}, "ok\n", "", 0),
+        ({"data": {"output": "", "error": "boom"}}, "", "boom", 1),
+    ],
+)
+async def test_boxlite_shell_wrapper_normalizes_shipyard_results(
+    raw_result, expected_stdout, expected_stderr, expected_exit_code
+):
+    calls = []
+
+    class FakeShipyardShell:
+        async def exec(
+            self,
+            command,
+            cwd=None,
+            env=None,
+            timeout=30,
+            shell=True,
+            background=False,
+        ):
+            calls.append((command, cwd, env, timeout, shell, background))
+            return raw_result
+
+    wrapper = boxlite_booter.BoxliteShellWrapper(FakeShipyardShell())
+
+    result = await wrapper.exec(
+        "pwd",
+        cwd="/workspace",
+        env={"A": "B"},
+        timeout=5,
+        shell=True,
+        background=False,
+    )
+
+    assert calls == [("pwd", "/workspace", {"A": "B"}, 5, True, False)]
+    assert result["stdout"] == expected_stdout
+    assert result["stderr"] == expected_stderr
+    assert result["exit_code"] == expected_exit_code
+
+
 def test_normalize_python_result_accepts_tuple_images():
     result = boxlite_booter._normalize_python_result(
         {
