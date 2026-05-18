@@ -477,11 +477,13 @@ class BoxliteBooter(ComputerBooter):
         persistent_name: str | None = None,
         resume: bool = False,
         sandbox_id: str | None = None,
+        host_port: int | None = None,
     ) -> None:
         self.persistent = persistent
         self.persistent_name = persistent_name
         self.resume = resume
         self.sandbox_id = sandbox_id
+        self.host_port = host_port
         self._sandbox_client: MockShipyardSandboxClient | None = None
         self._python: BoxlitePythonWrapper | None = None
         self._shell: ShipyardShellComponent | None = None
@@ -503,56 +505,73 @@ class BoxliteBooter(ComputerBooter):
         logger.info(
             f"Booting(Boxlite) for session: {session_id}, this may take a while..."
         )
-        random_port = random.randint(20000, 30000)
+        random_port = self.host_port or random.randint(20000, 30000)
+        self.host_port = random_port
         box_name = self.persistent_name if self.persistent else None
         runtime = boxlite.Boxlite.default()
         if self.resume and box_name and runtime.get_info(box_name) is None:
             raise RuntimeError(
                 f"Boxlite persistent sandbox {box_name!r} could not be resumed"
             )
-        with capture_signal_handlers():
-            self.box = boxlite.SimpleBox(
-                image="soulter/shipyard-ship",
-                runtime=runtime,
-                name=box_name,
-                auto_remove=not self.persistent,
-                reuse_existing=self.persistent,
-                memory_mib=512,
-                cpus=1,
-                ports=[
-                    {
-                        "host_port": random_port,
-                        "guest_port": 8123,
-                    }
-                ],
+        try:
+            with capture_signal_handlers():
+                self.box = boxlite.SimpleBox(
+                    image="soulter/shipyard-ship",
+                    runtime=runtime,
+                    name=box_name,
+                    auto_remove=not self.persistent,
+                    reuse_existing=self.persistent,
+                    memory_mib=512,
+                    cpus=1,
+                    ports=[
+                        {
+                            "host_port": random_port,
+                            "guest_port": 8123,
+                        }
+                    ],
+                )
+                await self.box.start()
+            logger.info(f"Boxlite booter started for session: {session_id}")
+            self._sandbox_client = MockShipyardSandboxClient(
+                sb_url=f"http://127.0.0.1:{random_port}"
             )
-            await self.box.start()
-        logger.info(f"Boxlite booter started for session: {session_id}")
-        self._sandbox_client = MockShipyardSandboxClient(
-            sb_url=f"http://127.0.0.1:{random_port}"
-        )
-        self._python = BoxlitePythonWrapper(
-            ShipyardPythonComponent(
+            self._python = BoxlitePythonWrapper(
+                ShipyardPythonComponent(
+                    client=self._sandbox_client,  # type: ignore
+                    ship_id=self.box.id,
+                    session_id=session_id,
+                )
+            )
+            self._shell = ShipyardShellComponent(
                 client=self._sandbox_client,  # type: ignore
                 ship_id=self.box.id,
                 session_id=session_id,
             )
-        )
-        self._shell = ShipyardShellComponent(
-            client=self._sandbox_client,  # type: ignore
-            ship_id=self.box.id,
-            session_id=session_id,
-        )
-        self._ship_fs = ShipyardFileSystemComponent(
-            client=self._sandbox_client,  # type: ignore
-            ship_id=self.box.id,
-            session_id=session_id,
-        )
-        self._fs = ShipyardFileSystemWrapper(
-            _shipyard_fs=self._ship_fs, _shipyard_shell=self._shell
-        )
+            self._ship_fs = ShipyardFileSystemComponent(
+                client=self._sandbox_client,  # type: ignore
+                ship_id=self.box.id,
+                session_id=session_id,
+            )
+            self._fs = ShipyardFileSystemWrapper(
+                _shipyard_fs=self._ship_fs, _shipyard_shell=self._shell
+            )
 
-        await self._sandbox_client.wait_healthy(self.box.id)
+            await self._sandbox_client.wait_healthy(self.box.id)
+        except BaseException:
+            await self._cleanup_failed_boot()
+            raise
+
+    async def _cleanup_failed_boot(self) -> None:
+        await self._close_client()
+        if self.box is None:
+            return
+        try:
+            if self.persistent:
+                await self.box.__aexit__(None, None, None)
+            else:
+                await self.box.shutdown()
+        finally:
+            self.box = None
 
     async def _close_client(self) -> None:
         if self._sandbox_client is not None:

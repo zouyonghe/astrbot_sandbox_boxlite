@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
@@ -35,7 +36,7 @@ class BoxliteSandboxProvider:
         return str(config.get("persistent_name") or fallback).strip()
 
     def build_create_config(self, context: Context, session_id: str) -> dict:
-        return {}
+        return {"host_port": random.randint(20000, 30000)}
 
     def build_connect_info(self, sandbox_name: str, config: dict) -> dict:
         return {
@@ -44,6 +45,7 @@ class BoxliteSandboxProvider:
                 config,
                 str(config.get("sandbox_id") or sandbox_name),
             ),
+            "host_port": int(config.get("host_port") or random.randint(20000, 30000)),
         }
 
     def update_connect_info(self, record: dict, *, sandbox_name: str) -> dict:
@@ -53,6 +55,16 @@ class BoxliteSandboxProvider:
             "persistent_name",
             str(record.get("sandbox_id") or sandbox_name).strip(),
         )
+        return connect_info
+
+    def update_connect_info_after_boot(
+        self, record: dict, booter: ComputerBooter
+    ) -> dict | None:
+        host_port = getattr(booter, "host_port", None)
+        if not host_port:
+            return None
+        connect_info = dict(record.get("connect_info") or {})
+        connect_info["host_port"] = int(host_port)
         return connect_info
 
     def get_idle_timeout(self, context: Context, session_id: str) -> float:
@@ -76,11 +88,17 @@ class BoxliteSandboxProvider:
     ) -> ComputerBooter:
         if self._boot_hook is not None:
             return await self._boot_hook(context, session_id, sandbox_id, config)
+        host_port = config.get("host_port")
+        if bool(config.get("resume", False)) and not host_port:
+            raise RuntimeError(
+                "Boxlite persistent sandbox cannot be resumed without a stored host_port"
+            )
         client = BoxliteBooter(
             persistent=True,
             persistent_name=self._persistent_name(config, sandbox_id),
             resume=bool(config.get("resume", False)),
             sandbox_id=sandbox_id,
+            host_port=int(host_port) if host_port else None,
         )
         await client.boot(uuid.uuid5(uuid.NAMESPACE_DNS, session_id).hex)
         return client

@@ -24,6 +24,15 @@ def test_boxlite_provider_connect_info_tracks_persistent_name(
 
     assert info["name"] == name
     assert info["persistent_name"] == expected_persistent_name
+    assert 20000 <= info["host_port"] <= 30000
+
+
+def test_boxlite_provider_connect_info_preserves_configured_host_port():
+    provider = provider_module.BoxliteSandboxProvider()
+
+    info = provider.build_connect_info("Named", {"host_port": 23456})
+
+    assert info["host_port"] == 23456
 
 
 def test_boxlite_sandbox_provider_supports_persistent_reconnect():
@@ -60,6 +69,42 @@ def test_boxlite_provider_update_connect_info_populates_legacy_persistent_name()
     assert updated["persistent_name"] == "boxlite-1"
 
 
+def test_boxlite_provider_update_connect_info_preserves_host_port():
+    provider = provider_module.BoxliteSandboxProvider()
+
+    updated = provider.update_connect_info(
+        {
+            "sandbox_id": "boxlite-1",
+            "connect_info": {"name": "Legacy", "host_port": 23456},
+        },
+        sandbox_name="Renamed",
+    )
+
+    assert updated["host_port"] == 23456
+
+
+def test_boxlite_provider_updates_host_port_after_boot():
+    provider = provider_module.BoxliteSandboxProvider()
+
+    updated = provider.update_connect_info_after_boot(
+        {"connect_info": {"name": "Boxlite"}},
+        SimpleNamespace(host_port=23456),
+    )
+
+    assert updated == {"name": "Boxlite", "host_port": 23456}
+
+
+def test_boxlite_provider_skips_host_port_update_when_missing():
+    provider = provider_module.BoxliteSandboxProvider()
+
+    updated = provider.update_connect_info_after_boot(
+        {"connect_info": {"name": "Boxlite"}},
+        SimpleNamespace(),
+    )
+
+    assert updated is None
+
+
 @pytest.mark.asyncio
 async def test_boxlite_provider_passes_persistent_reuse_flags(monkeypatch):
     recorded = {}
@@ -79,14 +124,23 @@ async def test_boxlite_provider_passes_persistent_reuse_flags(monkeypatch):
         context=SimpleNamespace(),
         session_id="dashboard",
         sandbox_id="boxlite-1",
-        config={},
+        config={"host_port": 23456},
     )
 
     assert recorded["persistent"] is True
     assert recorded["persistent_name"] == "boxlite-1"
     assert recorded["resume"] is False
     assert recorded["sandbox_id"] == "boxlite-1"
+    assert recorded["host_port"] == 23456
     assert getattr(booter, "sandbox_id") == "boxlite-1"
+
+
+def test_boxlite_provider_build_create_config_allocates_host_port():
+    provider = provider_module.BoxliteSandboxProvider()
+
+    config = provider.build_create_config(SimpleNamespace(), "dashboard")
+
+    assert 20000 <= config["host_port"] <= 30000
 
 
 @pytest.mark.asyncio
@@ -108,14 +162,38 @@ async def test_boxlite_provider_strips_explicit_persistent_name(monkeypatch):
         context=SimpleNamespace(),
         session_id="dashboard",
         sandbox_id="boxlite-1",
-        config={"resume": True, "persistent_name": " boxlite-2 "},
+        config={
+            "resume": True,
+            "persistent_name": " boxlite-2 ",
+            "host_port": 23456,
+        },
     )
 
     assert recorded["persistent"] is True
     assert recorded["persistent_name"] == "boxlite-2"
     assert recorded["resume"] is True
     assert recorded["sandbox_id"] == "boxlite-1"
+    assert recorded["host_port"] == 23456
     assert getattr(booter, "sandbox_id") == "boxlite-1"
+
+
+@pytest.mark.asyncio
+async def test_boxlite_provider_rejects_resume_without_host_port(monkeypatch):
+    class FakeBooter:
+        def __init__(self, **kwargs):
+            raise AssertionError("resume path must fail before booting")
+
+    monkeypatch.setattr(provider_module, "BoxliteBooter", FakeBooter)
+
+    provider = provider_module.BoxliteSandboxProvider()
+
+    with pytest.raises(RuntimeError, match="without a stored host_port"):
+        await provider.create_booter(
+            context=SimpleNamespace(),
+            session_id="dashboard",
+            sandbox_id="boxlite-1",
+            config={"resume": True, "persistent_name": "boxlite-1"},
+        )
 
 
 @pytest.mark.asyncio
@@ -315,6 +393,128 @@ async def test_boxlite_restore_does_not_create_when_persistent_box_missing(monke
 
     with pytest.raises(RuntimeError, match="could not be resumed"):
         await booter.boot("session-1")
+
+
+@pytest.mark.asyncio
+async def test_boxlite_booter_uses_configured_host_port(monkeypatch):
+    recorded = {}
+
+    class FakeRuntime:
+        def get_info(self, name):
+            return {"name": name}
+
+    class FakeSimpleBox:
+        id = "fake-box"
+
+        def __init__(self, **kwargs):
+            recorded.update(kwargs)
+
+        async def start(self):
+            return None
+
+    async def fake_wait_healthy(self, ship_id):
+        recorded["health_url"] = self.sb_url
+        recorded["health_ship_id"] = ship_id
+
+    monkeypatch.setattr(
+        boxlite_booter.boxlite,
+        "Boxlite",
+        SimpleNamespace(default=lambda: FakeRuntime()),
+    )
+    monkeypatch.setattr(boxlite_booter.boxlite, "SimpleBox", FakeSimpleBox)
+    monkeypatch.setattr(
+        boxlite_booter.MockShipyardSandboxClient,
+        "wait_healthy",
+        fake_wait_healthy,
+    )
+    monkeypatch.setattr(boxlite_booter, "ShipyardPythonComponent", lambda **_: object())
+    monkeypatch.setattr(boxlite_booter, "ShipyardShellComponent", lambda **_: object())
+    monkeypatch.setattr(
+        boxlite_booter, "ShipyardFileSystemComponent", lambda **_: object()
+    )
+    monkeypatch.setattr(
+        boxlite_booter, "ShipyardFileSystemWrapper", lambda **_: object()
+    )
+
+    booter = boxlite_booter.BoxliteBooter(
+        persistent=True,
+        persistent_name="boxlite-1",
+        resume=True,
+        host_port=23456,
+    )
+
+    await booter.boot("session-1")
+
+    assert recorded["ports"] == [{"host_port": 23456, "guest_port": 8123}]
+    assert recorded["health_url"] == "http://127.0.0.1:23456"
+    assert booter.host_port == 23456
+
+
+@pytest.mark.asyncio
+async def test_boxlite_booter_cleans_up_client_when_health_check_fails(monkeypatch):
+    calls = []
+
+    class FakeRuntime:
+        def get_info(self, name):
+            return {"name": name}
+
+    class FakeSimpleBox:
+        id = "fake-box"
+
+        def __init__(self, **kwargs):
+            pass
+
+        async def start(self):
+            calls.append("start")
+
+        async def __aexit__(self, exc_type, exc, tb):
+            calls.append("exit")
+
+    async def fake_wait_healthy(self, ship_id):
+        calls.append(("wait", ship_id))
+        raise RuntimeError("not healthy")
+
+    async def fake_close(self):
+        calls.append("close-client")
+
+    monkeypatch.setattr(
+        boxlite_booter.boxlite,
+        "Boxlite",
+        SimpleNamespace(default=lambda: FakeRuntime()),
+    )
+    monkeypatch.setattr(boxlite_booter.boxlite, "SimpleBox", FakeSimpleBox)
+    monkeypatch.setattr(
+        boxlite_booter.MockShipyardSandboxClient,
+        "wait_healthy",
+        fake_wait_healthy,
+    )
+    monkeypatch.setattr(
+        boxlite_booter.MockShipyardSandboxClient,
+        "close",
+        fake_close,
+    )
+    monkeypatch.setattr(boxlite_booter, "ShipyardPythonComponent", lambda **_: object())
+    monkeypatch.setattr(boxlite_booter, "ShipyardShellComponent", lambda **_: object())
+    monkeypatch.setattr(
+        boxlite_booter, "ShipyardFileSystemComponent", lambda **_: object()
+    )
+    monkeypatch.setattr(
+        boxlite_booter, "ShipyardFileSystemWrapper", lambda **_: object()
+    )
+
+    booter = boxlite_booter.BoxliteBooter(
+        persistent=True,
+        persistent_name="boxlite-1",
+        resume=True,
+        host_port=23456,
+    )
+
+    with pytest.raises(RuntimeError, match="not healthy"):
+        await booter.boot("session-1")
+
+    assert calls == ["start", ("wait", "fake-box"), "close-client", "exit"]
+    assert booter.box is None
+    assert booter._sandbox_client is None
 
 
 def test_restore_signal_handlers_logs_failures(monkeypatch):
